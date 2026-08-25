@@ -1,0 +1,138 @@
+<!-- File: index.html -->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Topo Forge NextGen</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+      body { margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; display: flex; flex-direction: column; height: 100vh; background: #1e1e1e; color: #fff; }
+      header { padding: 15px 20px; background: #2d2d2d; border-bottom: 1px solid #404040; display: flex; flex-direction: column; gap: 10px; }
+      .top-row, .middle-row, .bottom-row { display: flex; gap: 15px; align-items: center; flex-wrap: wrap; }
+      h1 { margin: 0; font-size: 1.2rem; min-width: max-content; margin-right: 15px; }
+      
+      .search-container { display: flex; gap: 5px; border-right: 1px solid #555; padding-right: 15px; align-items: center; }
+      input[type="text"] { background: #1a1a1a; color: white; border: 1px solid #555; padding: 6px 10px; border-radius: 4px; width: 140px; }
+      input[type="number"] { background: #1a1a1a; color: white; border: 1px solid #555; padding: 4px 6px; border-radius: 4px; font-weight: bold; }
+      
+      .slider-container { display: flex; align-items: center; gap: 5px; border-right: 1px solid #555; padding-right: 15px;}
+      .checkbox-group { display: flex; gap: 12px; align-items: center; border-right: 1px solid #555; padding-right: 15px; font-size: 0.85rem; }
+
+      #elevation-controls { display: none; flex-direction: column; gap: 5px; background: #222; padding: 10px; border-radius: 6px; border: 1px solid #444; min-width: 200px; }
+      .elev-row { display: flex; align-items: center; justify-content: space-between; font-size: 0.8rem; font-weight: bold; }
+      .elev-row input[type="range"] { width: 100px; cursor: pointer; }
+      .color-dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; margin-right: 5px; border: 1px solid #000; }
+
+      .middle-row { background: #222; padding: 8px 15px; border-radius: 6px; border: 1px solid #444; }
+
+      button, select { background: #007acc; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-weight: bold; }
+      button:disabled { background: #404040; color: #888; cursor: not-allowed; }
+      select { background: #404040; border: 1px solid #555; }
+      #status-text { font-size: 0.9rem; color: #aaa; margin-left: auto; font-style: italic; }
+      
+      #workspace { display: flex; flex: 1; overflow: hidden; }
+      #map-view { flex: 1; border-right: 1px solid #404040; background: #1a1a1a; }
+      #three-view { flex: 1; position: relative; background: #323232; }
+      .export-btn { background-color: #e65100; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="top-row">
+        <h1>Topo Forge</h1>
+        <div class="search-container">
+          <input type="text" id="search-input" placeholder="Search Map..." />
+          <button id="search-btn">Find</button>
+        </div>
+        
+        <div class="slider-container">
+          <label for="map-layer-select" style="font-size: 0.8rem; font-weight:bold; color:#ccc;">View: </label>
+          <select id="map-layer-select" style="border: none; background: #1a1a1a; margin-left: 5px;">
+            <option value="labels" selected>Streets & Labels</option>
+            <option value="satellite">High-Res Satellite</option>
+          </select>
+        </div>
+
+        <div class="slider-container">
+          <label for="z-exaggeration" style="font-size: 0.8rem; font-weight:bold; color:#ccc;">Z-Scale: </label>
+          <input type="range" id="z-exaggeration" min="1" max="5" step="0.25" value="1.5" style="width: 70px; margin-left: 5px;" />
+          <span id="z-val" style="font-size: 0.85rem; font-weight: bold; width: 35px;">1.5x</span>
+        </div>
+        
+        <select id="color-style-select">
+          <option value="kmeans-2">Palette: 4 Colors (Tan + Green)</option>
+          <option value="kmeans-3" selected>Palette: 5 Colors (Tan + Green + Snow)</option>
+          <option value="kmeans-4">Palette: 6 Colors (Adds Grey Rock)</option>
+          <option value="elevation">Palette: Custom Stacked Elevation</option>
+          <option value="solid">Palette: Solid Tan Base</option>
+        </select>
+      </div>
+
+      <div class="middle-row">
+        <div style="font-size: 0.8rem; font-weight: bold; color: #ccc;">Map Size & Grid:</div>
+        <div class="elev-row">
+            <label>Total Width (mm): </label>
+            <input type="number" id="total-width-mm" value="275" min="50" max="2000" style="width: 50px; margin-left: 5px;" />
+        </div>
+        <div class="elev-row" style="margin-left: 10px;">
+            <label>Cols (X): </label>
+            <input type="number" id="grid-cols" value="4" min="1" max="20" style="width: 35px; margin-left: 5px;" />
+        </div>
+        <div class="elev-row" style="margin-left: 10px;">
+            <label>Rows (Y): </label>
+            <input type="number" id="grid-rows" value="4" min="1" max="20" style="width: 35px; margin-left: 5px;" />
+        </div>
+        
+        <div class="elev-row" style="margin-left: 15px; border-left: 1px solid #555; padding-left: 15px;">
+            <label>Nozzle: </label>
+            <select id="nozzle-size" style="margin-left: 5px; width: 60px;">
+                <option value="0.2">0.2</option>
+                <option value="0.4" selected>0.4</option>
+                <option value="0.6">0.6</option>
+            </select>
+        </div>
+        <div class="elev-row" style="margin-left: 5px; color: #aaa; font-size: 0.75rem;">
+            Layer: <span id="layer-height-val">0.20</span>mm
+        </div>
+        <div class="elev-row" style="margin-left: 10px;">
+            <label>Water Drop: </label>
+            <select id="water-drop-layers" style="margin-left: 5px;">
+                <option value="0">0 Layers</option>
+                <option value="1" selected>1 Layer</option>
+                <option value="2">2 Layers</option>
+                <option value="3">3 Layers</option>
+            </select>
+        </div>
+      </div>
+
+      <div class="bottom-row">
+        <div id="stacked-column-wrapper" style="display: none; align-items: center; gap: 10px; border-right: 1px solid #555; padding-right: 15px;">
+            <div style="font-size: 0.8rem; font-weight: bold; color: #ccc;">Elevation<br>Bands:</div>
+            <div style="position: relative; width: 60px; height: 120px; border: 2px solid #555; border-radius: 4px; display: flex; flex-direction: column; overflow: hidden; user-select: none;" id="stacked-col">
+                <div style="display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: bold; color: #000; position: relative; background: white; height: 20%;" id="seg-snow"><span id="txt-snow">20%</span><div style="position: absolute; left: 0; right: 0; height: 8px; cursor: ns-resize; z-index: 10; background: rgba(0,0,0,0.2); bottom: -4px;" id="handle-snow"></div></div>
+                <div style="display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: bold; color: #000; position: relative; background: #226422; height: 30%; color: white;" id="seg-tree"><span id="txt-tree">30%</span><div style="position: absolute; left: 0; right: 0; height: 8px; cursor: ns-resize; z-index: 10; background: rgba(0,0,0,0.2); bottom: -4px;" id="handle-tree"></div></div>
+                <div style="display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: bold; color: #000; position: relative; background: #d2b48c; height: 50%;" id="seg-earth"><span id="txt-earth">50%</span></div>
+            </div>
+        </div>
+
+        <div class="checkbox-group">
+            <label><input type="checkbox" id="toggle-bathymetry"> Enable Bathymetry</label>
+            <label><input type="checkbox" id="toggle-roads" checked> Include Major Roads</label>
+        </div>
+
+        <button id="load-gpx-btn">Load Trails (.gpx)</button>
+        <span id="gpx-status" style="display:none; font-size: 0.85rem; color: #aaa;"></span>
+        
+        <button id="generate-btn" disabled>Generate</button>
+        <button id="export-btn" disabled class="export-btn">Export OBJ</button>
+        <span id="status-text">Select a bounding box.</span>
+      </div>
+    </header>
+    <div id="workspace">
+      <div id="map-view"></div>
+      <div id="three-view"></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
