@@ -23,7 +23,7 @@ onmessage = async (e) => {
   }
 
   const { Manifold, Mesh } = manifoldInstance;
-  const { 
+const { 
     zExaggeration, elevationData, elevRows, elevCols, 
     landCoverMask, maskWidth, maskHeight, 
     roadData, trailPoints,
