@@ -31,7 +31,6 @@ const layerHeightVal = document.getElementById('layer-height-val') as HTMLSpanEl
 const waterDropLayersSelect = document.getElementById('water-drop-layers') as HTMLSelectElement;
 const includeRoadsCheckbox = document.getElementById('include-roads') as HTMLInputElement;
 
-// The 7 Color Inputs
 const colWater = document.getElementById('col-water') as HTMLInputElement;
 const colDirt = document.getElementById('col-dirt') as HTMLInputElement;
 const colForest = document.getElementById('col-forest') as HTMLInputElement;
@@ -70,7 +69,58 @@ mapLayerSelect?.addEventListener('change', () => {
 });
 setTimeout(() => mapLayerSelect.dispatchEvent(new Event('change')), 500);
 
-// Fetch and draw Overpass Roads on the 2D Map
+const gpxInput = document.createElement('input');
+gpxInput.type = 'file';
+gpxInput.accept = '.gpx';
+gpxInput.multiple = true; 
+gpxInput.style.display = 'none';
+document.body.appendChild(gpxInput);
+
+const loadGpxBtn = document.getElementById('load-gpx-btn') as HTMLButtonElement;
+const gpxStatus = document.getElementById('gpx-status') as HTMLSpanElement;
+
+const clearGpxBtn = document.createElement('button');
+clearGpxBtn.innerText = 'Clear';
+clearGpxBtn.style.display = 'none';
+clearGpxBtn.style.marginLeft = '5px';
+clearGpxBtn.style.backgroundColor = '#cc0000';
+loadGpxBtn?.parentNode?.insertBefore(clearGpxBtn, loadGpxBtn.nextSibling);
+
+let loadedTrailPoints: { lat: number; lng: number }[] = [];
+
+loadGpxBtn?.addEventListener('click', () => gpxInput.click());
+
+gpxInput.addEventListener('change', async (e) => {
+  const files = (e.target as HTMLInputElement).files;
+  if (!files || files.length === 0) return;
+  loadedTrailPoints = [];
+  for (let f = 0; f < files.length; f++) {
+      const text = await files[f].text();
+      const parser = new DOMParser();
+      const xml = parser.parseFromString(text, 'application/xml');
+      const trackPoints = xml.getElementsByTagName('trkpt');
+      for (let i = 0; i < trackPoints.length; i++) {
+        const lat = parseFloat(trackPoints[i].getAttribute('lat') || '0');
+        const lng = parseFloat(trackPoints[i].getAttribute('lon') || '0');
+        if (lat && lng) loadedTrailPoints.push({ lat, lng });
+      }
+  }
+  if (gpxStatus) {
+    gpxStatus.style.display = 'inline';
+    gpxStatus.innerText = `(${loadedTrailPoints.length} pts)`;
+  }
+  clearGpxBtn.style.display = 'inline-block';
+});
+
+clearGpxBtn.addEventListener('click', () => {
+    loadedTrailPoints = [];
+    gpxInput.value = ''; 
+    if (gpxStatus) gpxStatus.style.display = 'none';
+    clearGpxBtn.style.display = 'none';
+    if (statusText) statusText.innerText = "Trail cleared.";
+});
+
+// Robust POST Request for Road Preview
 previewRoadsBtn?.addEventListener('click', async () => {
     const bbox = projectState.bbox;
     if (!bbox) return;
@@ -84,9 +134,22 @@ previewRoadsBtn?.addEventListener('click', async () => {
 
     try {
         const query = `[out:json];(way["highway"~"motorway|trunk|primary|secondary"](${bbox.south},${bbox.west},${bbox.north},${bbox.east}););out geom;`;
-        const res = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`);
+        
+        const res = await fetch(`https://overpass-api.de/api/interpreter`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `data=${encodeURIComponent(query)}`
+        });
+
+        if (!res.ok) throw new Error(`Server returned ${res.status}`);
+        
         const data = await res.json();
         
+        if (!data.elements || data.elements.length === 0) {
+            statusText.innerText = `No major roads found in this area.`;
+            return;
+        }
+
         data.elements.forEach((el: any) => {
             if (el.type === 'way' && el.geometry) {
                 const latlngs = el.geometry.map((g: any) => [g.lat, g.lon]);
@@ -94,8 +157,8 @@ previewRoadsBtn?.addEventListener('click', async () => {
             }
         });
         statusText.innerText = `Previewing ${data.elements.length} roads.`;
-    } catch (e) {
-        statusText.innerText = "Error fetching roads for preview.";
+    } catch (e: any) {
+        statusText.innerText = `Road API Error: ${e.message}`;
     } finally {
         previewRoadsBtn.innerText = 'Preview Roads on Map';
         previewRoadsBtn.disabled = false;
@@ -187,14 +250,20 @@ generateBtn?.addEventListener('click', async () => {
       fetchLandCoverData(bbox, 512, 512)
     ]);
 
-    // Fetch road data for the 3D mesh if checked
     let roadData = null;
     if (includeRoadsCheckbox.checked) {
         statusText.innerText = "Fetching Overpass Road Data...";
         try {
             const query = `[out:json];(way["highway"~"motorway|trunk|primary|secondary"](${bbox.south},${bbox.west},${bbox.north},${bbox.east}););out geom;`;
-            const res = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`);
-            roadData = await res.json();
+            // Robust POST request for generation
+            const res = await fetch(`https://overpass-api.de/api/interpreter`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: `data=${encodeURIComponent(query)}`
+            });
+            if (res.ok) {
+                roadData = await res.json();
+            }
         } catch (e) {
             console.warn("Road fetch failed, skipping.");
         }
@@ -220,15 +289,19 @@ generateBtn?.addEventListener('click', async () => {
         renderBathymetry: document.getElementById('toggle-bathymetry') ? (document.getElementById('toggle-bathymetry') as HTMLInputElement).checked : false,
         waterDrop: calculatedWaterDrop,
         elevationData: elevData,     
+        elevRows: elevRows,
+        elevCols: elevCols,
         landCoverMask: landCoverMask,
-        roadData: roadData, // Send roads to the worker          
+        maskWidth: 512,
+        maskHeight: 512,
+        roadData: roadData,
+        trailPoints: loadedTrailPoints,
         bbox: bbox,
         puzzleRows: puzzleRows,
         puzzleCols: puzzleCols,
         pieceWidth: totalW / puzzleCols, 
         pieceDepth: totalD / puzzleRows, 
         tolerance: 0.15,
-        // Send the 7 custom colors to the WebWorker
         colors: {
             water: colWater.value,
             dirt: colDirt.value,
