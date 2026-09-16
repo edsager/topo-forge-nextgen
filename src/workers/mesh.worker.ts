@@ -5,7 +5,6 @@ function hexToRgb(hex: string): [number, number, number] {
     return [(bigint >> 16) & 255, (bigint >> 8) & 255, bigint & 255];
 }
 
-// Math helpers to extrude roads and buildings
 function pointInPolygon(px: number, py: number, polygon: {x:number, y:number}[]) {
     let inside = false;
     for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
@@ -67,11 +66,12 @@ onmessage = async (e) => {
     const cBldgs = hexToRgb(colors.buildings);
     const cRoads = hexToRgb(colors.roads);
 
-    // Find absolute minimum elevation to subtract the "floor" and prevent massive thick blocks
+    // Get true minimum elevation (ignoring missing data artifacts) to prevent the "Thick Block" bug
     let minElev = Infinity;
     for (let i = 0; i < elevPoints.length; i++) {
-        if (elevPoints[i] !== undefined && !isNaN(elevPoints[i]) && elevPoints[i] < minElev) {
-            minElev = elevPoints[i];
+        const val = elevPoints[i];
+        if (val !== undefined && !isNaN(val) && val > -10000 && val < minElev) {
+            minElev = val;
         }
     }
     if (minElev === Infinity) minElev = 0;
@@ -84,7 +84,6 @@ onmessage = async (e) => {
     const totalW = pieceWidth * puzzleCols;
     const scaleY = totalW / realWorldWidthMeters;
 
-    // Parse OpenStreetMap Vectors
     const buildings: {x:number, y:number}[][] = [];
     const roads: {x:number, y:number}[][] = [];
     if (infrastructureData && infrastructureData.elements) {
@@ -134,13 +133,12 @@ onmessage = async (e) => {
             
             const rawHeight = elevPoints[elevIdx] || 0;
             
-            // Subtracting the lowest point so the map sits flush on the build plate!
+            // Fix applied: Subtract sea-level so the puzzle sits perfectly flat on the print bed!
             let h = (rawHeight - minElev) * scaleY * zExaggeration;
             if (isNaN(h)) h = 0;
 
             let vertexColor = cDirt;
 
-            // Apply Land Cover colors
             if (maskPoints && maskPoints.length > 0) {
                 const maskX = Math.floor(globalFracX * (mCols - 1));
                 const maskY = Math.floor(globalFracY * (mRows - 1));
@@ -164,10 +162,8 @@ onmessage = async (e) => {
                 }
             }
 
-            // EXTRUDE BUILDINGS AND ROADS!
             let isBldg = false;
             let isRoad = false;
-            
             for (const bldg of buildings) {
                 if (pointInPolygon(globalFracX, globalFracY, bldg)) { isBldg = true; break; }
             }
@@ -178,10 +174,10 @@ onmessage = async (e) => {
             }
             
             if (isBldg) {
-                h += (10 * scaleY * zExaggeration); // Extrude Buildings up 10m
+                h += (10 * scaleY * zExaggeration); 
                 vertexColor = cBldgs;
             } else if (isRoad) {
-                h += (0.5 * scaleY * zExaggeration); // Raise Roads slightly so they don't print under dirt
+                h += (0.5 * scaleY * zExaggeration); 
                 vertexColor = cRoads;
             }
 
@@ -193,7 +189,7 @@ onmessage = async (e) => {
 
         const baseZ = Math.min(-10, minZ_mesh - 10);
 
-        // Correct Counter-Clockwise Winding (Makes the geometry visible in the browser!)
+        // FIX: Correctly wound counter-clockwise triangles so the map is visible and outward-facing!
         for (let i = 0; i < gridResY; i++) {
           for (let j = 0; j < gridResX; j++) {
             const v0 = i * (gridResX + 1) + j;
@@ -212,7 +208,7 @@ onmessage = async (e) => {
             blockColors.push(0.2, 0.2, 0.2); 
         }
 
-        // Correctly Wound Skirt/Base
+        // Perfectly wound skirt normals for the 3D viewer and Bambu Studio
         for (let j = 0; j < gridResX; j++) {
             const v0 = j, v1 = j + 1;
             const b0 = v0 + numTopVerts, b1 = v1 + numTopVerts;
@@ -237,8 +233,13 @@ onmessage = async (e) => {
             blockFaces.push(v0, b0, v1); blockFaces.push(v1, b0, b1);
         }
         
-        blockFaces.push(numTopVerts, numTopVerts + numTopVerts - 1, numTopVerts + gridResX);
-        blockFaces.push(numTopVerts, numTopVerts + numTopVerts - 1 - gridResX, numTopVerts + numTopVerts - 1);
+        // Solid bottom cap
+        const bTL = numTopVerts;
+        const bTR = numTopVerts + gridResX;
+        const bBL = numTopVerts + gridResY * (gridResX + 1);
+        const bBR = numTopVerts + gridResY * (gridResX + 1) + gridResX;
+        blockFaces.push(bTL, bTR, bBL);
+        blockFaces.push(bTR, bBR, bBL);
 
         pieces.push({
           id: `piece_${pr}_${pc}`,
