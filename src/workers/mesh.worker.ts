@@ -33,7 +33,6 @@ onmessage = async (e) => {
     const cRock = hexToRgb(colors.rock);
     const cSnow = hexToRgb(colors.snow);
 
-    // Scaling real-world elevation down to your printer bed size
     const latMid = (bbox && bbox.north && bbox.south) ? (bbox.north + bbox.south) / 2 : 40;
     const cosLat = Math.cos(latMid * Math.PI / 180);
     const east = (bbox && bbox.east) ? bbox.east : 0;
@@ -49,7 +48,6 @@ onmessage = async (e) => {
         const blockColors: number[] = [];
         const blockFaces: number[] = [];
         
-        // Lowered resolution to prevent the OBJ text exporter from freezing the browser
         const gridResX = 25; 
         const gridResY = 25; 
         
@@ -113,6 +111,7 @@ onmessage = async (e) => {
 
         const baseZ = Math.min(-10, minZ_mesh - 10);
 
+        // FIX 1: Counter-Clockwise Winding (Mesh is now visible and solid!)
         for (let i = 0; i < gridResY; i++) {
           for (let j = 0; j < gridResX; j++) {
             const v0 = i * (gridResX + 1) + j;
@@ -120,8 +119,8 @@ onmessage = async (e) => {
             const v2 = (i + 1) * (gridResX + 1) + j;
             const v3 = v2 + 1;
 
-            blockFaces.push(v0, v2, v1);
-            blockFaces.push(v1, v2, v3);
+            blockFaces.push(v0, v1, v2);
+            blockFaces.push(v2, v1, v3);
           }
         }
 
@@ -131,34 +130,34 @@ onmessage = async (e) => {
             blockColors.push(0.2, 0.2, 0.2); 
         }
 
+        // Properly wound Skirt Faces
         for (let j = 0; j < gridResX; j++) {
             const v0 = j, v1 = j + 1;
             const b0 = v0 + numTopVerts, b1 = v1 + numTopVerts;
-            blockFaces.push(v0, v1, b0); blockFaces.push(v1, b1, b0);
+            blockFaces.push(v0, b0, v1); blockFaces.push(v1, b0, b1);
         }
         for (let j = 0; j < gridResX; j++) {
             const v0 = gridResY * (gridResX + 1) + j;
             const v1 = v0 + 1;
             const b0 = v0 + numTopVerts, b1 = v1 + numTopVerts;
-            blockFaces.push(v0, b0, v1); blockFaces.push(v1, b0, b1);
+            blockFaces.push(v0, v1, b0); blockFaces.push(v1, b1, b0);
         }
         for (let i = 0; i < gridResY; i++) {
             const v0 = i * (gridResX + 1);
             const v1 = (i + 1) * (gridResX + 1);
             const b0 = v0 + numTopVerts, b1 = v1 + numTopVerts;
-            blockFaces.push(v0, b0, v1); blockFaces.push(v1, b0, b1);
+            blockFaces.push(v0, v1, b0); blockFaces.push(v1, b1, b0);
         }
         for (let i = 0; i < gridResY; i++) {
             const v0 = i * (gridResX + 1) + gridResX;
             const v1 = (i + 1) * (gridResX + 1) + gridResX;
             const b0 = v0 + numTopVerts, b1 = v1 + numTopVerts;
-            blockFaces.push(v0, v1, b0); blockFaces.push(v1, b1, b0);
+            blockFaces.push(v0, b0, v1); blockFaces.push(v1, b0, b1);
         }
         
-        blockFaces.push(numTopVerts, numTopVerts + gridResX, numTopVerts + numTopVerts - 1);
-        blockFaces.push(numTopVerts, numTopVerts + numTopVerts - 1, numTopVerts + numTopVerts - 1 - gridResX);
+        blockFaces.push(numTopVerts, numTopVerts + numTopVerts - 1, numTopVerts + gridResX);
+        blockFaces.push(numTopVerts, numTopVerts + numTopVerts - 1 - gridResX, numTopVerts + numTopVerts - 1);
 
-        // Raw output bypasses Manifold entirely, preventing the WebAssembly crash
         pieces.push({
           id: `piece_${pr}_${pc}`,
           vertexArray: new Float32Array(blockVerts),
