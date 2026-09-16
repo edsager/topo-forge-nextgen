@@ -1,8 +1,7 @@
 // src/core/exporter.ts
-import type { MeshPieceData } from './ThreeViewManager';
 
-export function exportToBambuOBJ(pieces: MeshPieceData[], filename: string) {
-    // FIX 2: Using a high-speed array buffer instead of looping strings
+export function exportToBambuOBJ(pieces: any[], filename: string) {
+    // High-speed array buffer
     const lines: string[] = [];
     lines.push("# TopoForge NextGen Multi-Color OBJ Export");
     
