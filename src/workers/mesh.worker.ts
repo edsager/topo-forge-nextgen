@@ -49,8 +49,8 @@ onmessage = async (e) => {
     for (let pr = 0; pr < puzzleRows; pr++) {
       for (let pc = 0; pc < puzzleCols; pc++) {
         
-        const blockVertsAndColors = []; // Interleaved [X,Y,Z, R,G,B]
-        const blockFaces = [];
+        const blockVertsAndColors: number[] = []; // Interleaved [X,Y,Z, R,G,B]
+        const blockFaces: number[] = [];
         const gridResX = 40; 
         const gridResY = 40; 
         
