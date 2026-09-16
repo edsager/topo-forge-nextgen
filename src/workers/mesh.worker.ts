@@ -1,7 +1,7 @@
 // src/workers/mesh.worker.ts
 
 function hexToRgb(hex: string): [number, number, number] {
-    if (!hex) return [128, 128, 128]; 
+    if (!hex) return [128, 128, 128];
     const bigint = parseInt(hex.replace('#', ''), 16);
     return [(bigint >> 16) & 255, (bigint >> 8) & 255, bigint & 255];
 }
@@ -11,22 +11,39 @@ onmessage = async (e) => {
   if (action !== 'GENERATE_PUZZLE') return;
 
   try {
-    const pRows = payload.puzzleRows || 1;
-    const pCols = payload.puzzleCols || 1;
-    const pWidth = payload.pieceWidth || 100;
-    const pDepth = payload.pieceDepth || 100;
+    const pRows = Math.max(1, payload.puzzleRows || 1);
+    const pCols = Math.max(1, payload.puzzleCols || 1);
+    const pWidth = Math.max(1, payload.pieceWidth || 100);
+    const pDepth = Math.max(1, payload.pieceDepth || 100);
     const tol = payload.tolerance || 0;
     const zEx = payload.zExaggeration || 1.5;
     const wDrop = payload.waterDrop || 0;
     const bbox = payload.bbox;
 
     const elevData = payload.elevationData || {};
-    const elevPoints = elevData.data || elevData || [];
+    const rawElevData = elevData.data || elevData || [];
     const eCols = payload.elevCols || elevData.width || 1;
     const eRows = payload.elevRows || elevData.height || 1;
 
+    let flatElev: number[] = [];
+    if (rawElevData.length > 0) {
+        if (Array.isArray(rawElevData[0]) || rawElevData[0] instanceof Float32Array) {
+            for (let r = 0; r < rawElevData.length; r++) {
+                for (let c = 0; c < rawElevData[r].length; c++) {
+                    flatElev.push(Number(rawElevData[r][c]));
+                }
+            }
+        } else if (typeof rawElevData[0] === 'object' && rawElevData[0] !== null && 'elevation' in rawElevData[0]) {
+            for (let i = 0; i < rawElevData.length; i++) {
+                flatElev.push(Number(rawElevData[i].elevation));
+            }
+        } else {
+            flatElev = Array.from(rawElevData) as number[];
+        }
+    }
+
     const maskData = payload.landCoverMask || {};
-    const maskPoints = maskData.data || maskData || [];
+    const maskPoints: number[] = Array.from(maskData.data || maskData || []) as number[];
     const mCols = payload.maskWidth || maskData.width || 1;
     const mRows = payload.maskHeight || maskData.height || 1;
 
@@ -39,8 +56,8 @@ onmessage = async (e) => {
     const cSnow = hexToRgb(payload.colors?.snow || '#FFFFFF');
 
     let minElev = Infinity;
-    for (let i = 0; i < elevPoints.length; i++) {
-        const val = elevPoints[i];
+    for (let i = 0; i < flatElev.length; i++) {
+        const val = flatElev[i];
         if (val !== undefined && !isNaN(val) && val > -10000 && val < minElev) {
             minElev = val;
         }
@@ -51,7 +68,7 @@ onmessage = async (e) => {
     const cosLat = Math.cos(latMid * Math.PI / 180);
     const east = (bbox && bbox.east) ? bbox.east : 0;
     const west = (bbox && bbox.west) ? bbox.west : 0;
-    const realWorldWidthMeters = Math.max(1, (east - west) * 111320 * cosLat);
+    const realWorldWidthMeters = Math.max(1, Math.abs(east - west) * 111320 * cosLat);
     
     const totalW = pWidth * pCols;
     const totalD = pDepth * pRows;
@@ -66,7 +83,6 @@ onmessage = async (e) => {
         const gridResX = 40; 
         const gridResY = 40; 
         
-        // THE FIX: Properly centering the grid at absolute 0,0 so the coordinates align with the data
         const pieceMinX = -totalW / 2 + (pc * pWidth) + (tol / 2);
         const pieceMaxX = pieceMinX + pWidth - tol;
         const pieceMinZ = -totalD / 2 + (pr * pDepth) + (tol / 2);
@@ -87,10 +103,10 @@ onmessage = async (e) => {
 
             const elevX = Math.floor(globalFracX * (eCols - 1));
             const elevY = Math.floor(globalFracY * (eRows - 1));
-            const maxIdx = Math.max(0, (elevPoints.length || 1) - 1);
+            const maxIdx = Math.max(0, (flatElev.length || 1) - 1);
             const elevIdx = Math.max(0, Math.min(maxIdx, elevY * eCols + elevX));
             
-            let rawElev = elevPoints[elevIdx];
+            let rawElev = flatElev[elevIdx];
             if (rawElev === undefined || isNaN(rawElev)) rawElev = minElev;
 
             let h = (rawElev - minElev) * scaleY * zEx; 
@@ -103,11 +119,12 @@ onmessage = async (e) => {
                 const maskY = Math.floor(globalFracY * (mRows - 1));
                 const maskIdx = (maskY * mCols + maskX) * 4;
                 
-                const r = maskPoints[maskIdx] || 0;
-                const g = maskPoints[maskIdx + 1] || 0;
-                const b = maskPoints[maskIdx + 2] || 0;
+                // FIXED: Strictly typed as numbers to clear the compilation error
+                const r = Number(maskPoints[maskIdx]) || 0;
+                const g = Number(maskPoints[maskIdx + 1]) || 0;
+                const b = Number(maskPoints[maskIdx + 2]) || 0;
                 
-                let isWater = (r < 50 && g < 50 && b > 150); 
+                const isWater = (r < 50 && g < 50 && b > 150); 
                 
                 if (isWater) {
                     h -= wDrop;

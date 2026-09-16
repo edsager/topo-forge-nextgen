@@ -210,7 +210,10 @@ generateBtn?.addEventListener('click', async () => {
             const query = `[out:json];(way["highway"~"motorway|trunk|primary|secondary"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});way["building"](${bbox.south},${bbox.west},${bbox.north},${bbox.east}););out geom;`;
             const res = await fetch(`https://overpass-api.de/api/interpreter`, {
                 method: 'POST',
-                body: query
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded'
+                },
+                body: 'data=' + encodeURIComponent(query)
             });
             if (res.ok) {
                 infrastructureData = await res.json();
