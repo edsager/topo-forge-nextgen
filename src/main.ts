@@ -16,7 +16,6 @@ const searchInput = document.getElementById('search-input') as HTMLInputElement;
 const searchBtn = document.getElementById('search-btn') as HTMLButtonElement;
 const generateBtn = document.getElementById('generate-btn') as HTMLButtonElement;
 const exportBtn = document.getElementById('export-btn') as HTMLButtonElement;
-const previewRoadsBtn = document.getElementById('preview-roads-btn') as HTMLButtonElement;
 const statusText = document.getElementById('status-text') as HTMLSpanElement;
 
 const zExaggerationInput = document.getElementById('z-exaggeration') as HTMLInputElement;
@@ -54,7 +53,6 @@ zExaggerationInput?.addEventListener('input', (event) => {
 });
 
 let currentTileLayer: any = null;
-let infrastructureOverlayGroup: any = null;
 
 mapLayerSelect?.addEventListener('change', () => {
     const leafletMap = (mapUI as any).map || (mapUI as any).leafletMap || (mapUI as any)._map;
@@ -118,56 +116,6 @@ clearGpxBtn.addEventListener('click', () => {
     if (gpxStatus) gpxStatus.style.display = 'none';
     clearGpxBtn.style.display = 'none';
     if (statusText) statusText.innerText = "Trail cleared.";
-});
-
-// Browser-friendly GET Request for Preview
-previewRoadsBtn?.addEventListener('click', async () => {
-    const bbox = projectState.bbox;
-    if (!bbox) return;
-    const leafletMap = (mapUI as any).map || (mapUI as any).leafletMap || (mapUI as any)._map;
-    
-    if (infrastructureOverlayGroup) leafletMap.removeLayer(infrastructureOverlayGroup);
-    infrastructureOverlayGroup = L.layerGroup().addTo(leafletMap);
-    
-    previewRoadsBtn.innerText = 'Loading Data...';
-    previewRoadsBtn.disabled = true;
-
-    try {
-        const query = `[out:json];(way["highway"~"motorway|trunk|primary|secondary"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});way["building"](${bbox.south},${bbox.west},${bbox.north},${bbox.east}););out geom;`;
-        
-        const res = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`);
-        
-        if (!res.ok) throw new Error(`Server returned ${res.status}`);
-        const data = await res.json();
-        
-        if (!data?.elements || data.elements.length === 0) {
-            statusText.innerText = `No roads or buildings found in this area.`;
-            return;
-        }
-
-        let roadCount = 0;
-        let bldgCount = 0;
-
-        data.elements.forEach((el: any) => {
-            if (el.type === 'way' && el.geometry && el.tags) {
-                const latlngs = el.geometry.map((g: any) => [g.lat, g.lon]);
-                
-                if (el.tags.building) {
-                    L.polygon(latlngs, {color: colBldgs.value, weight: 1, fillColor: colBldgs.value, fillOpacity: 0.5}).addTo(infrastructureOverlayGroup);
-                    bldgCount++;
-                } else if (el.tags.highway) {
-                    L.polyline(latlngs, {color: colRoads.value, weight: 3, opacity: 0.8}).addTo(infrastructureOverlayGroup);
-                    roadCount++;
-                }
-            }
-        });
-        statusText.innerText = `Previewing ${roadCount} roads and ${bldgCount} buildings.`;
-    } catch (e: any) {
-        statusText.innerText = `API Error: ${e.message}`;
-    } finally {
-        previewRoadsBtn.innerText = 'Preview Roads on Map';
-        previewRoadsBtn.disabled = false;
-    }
 });
 
 let finishedPuzzlePieces: MeshPieceData[] = []; 
@@ -260,7 +208,6 @@ generateBtn?.addEventListener('click', async () => {
         statusText.innerText = "Fetching Infrastructure Data...";
         try {
             const query = `[out:json];(way["highway"~"motorway|trunk|primary|secondary"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});way["building"](${bbox.south},${bbox.west},${bbox.north},${bbox.east}););out geom;`;
-            // Browser-friendly GET Request for generation
             const res = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`);
             if (res.ok) {
                 infrastructureData = await res.json();

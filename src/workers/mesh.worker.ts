@@ -1,4 +1,7 @@
 // src/workers/mesh.worker.ts
+import manifoldModule from 'manifold-3d';
+
+let manifoldInstance: any = null;
 
 function hexToRgb(hex: string): [number, number, number] {
     const bigint = parseInt(hex.replace('#', ''), 16);
@@ -9,6 +12,17 @@ onmessage = async (e) => {
   const { action, payload } = e.data;
   if (action !== 'GENERATE_PUZZLE') return;
 
+  if (!manifoldInstance) {
+    try {
+      manifoldInstance = await manifoldModule();
+      manifoldInstance.setup();
+    } catch (err) {
+      postMessage({ status: 'ERROR', error: 'Failed to initialize Manifold3D.' });
+      return;
+    }
+  }
+
+  const { Manifold, Mesh } = manifoldInstance;
   const { 
     zExaggeration, elevationData, elevRows, elevCols, 
     landCoverMask, maskWidth, maskHeight, 
@@ -20,7 +34,6 @@ onmessage = async (e) => {
     const eCols = elevationData.cols || elevationData.width || elevCols;
     const eRows = elevationData.rows || elevationData.height || elevRows;
 
-    // Failsafe in case Copernicus data is temporarily unavailable
     const maskPoints = landCoverMask ? (landCoverMask.data || landCoverMask) : null;
     const mCols = landCoverMask ? (landCoverMask.cols || landCoverMask.width || maskWidth) : 1;
     const mRows = landCoverMask ? (landCoverMask.rows || landCoverMask.height || maskHeight) : 1;
@@ -36,9 +49,8 @@ onmessage = async (e) => {
     for (let pr = 0; pr < puzzleRows; pr++) {
       for (let pc = 0; pc < puzzleCols; pc++) {
         
-        const blockVerts = [];
+        const blockVertsAndColors = []; // Interleaved [X,Y,Z, R,G,B]
         const blockFaces = [];
-        const blockColors = [];
         const gridResX = 40; 
         const gridResY = 40; 
         
@@ -89,13 +101,12 @@ onmessage = async (e) => {
                     vertexColor = cRock;
                 }
             } else {
-                // If land cover fails, color strictly by height
                 if (h > 2000 * zExaggeration) vertexColor = cSnow;
                 else if (h > 1000 * zExaggeration) vertexColor = cRock;
             }
 
-            blockVerts.push(localX, h, localZ);
-            blockColors.push(vertexColor[0]/255, vertexColor[1]/255, vertexColor[2]/255, 1.0);
+            // Push 6 items per vertex: X, Y, Z, R, G, B
+            blockVertsAndColors.push(localX, h, localZ, vertexColor[0]/255, vertexColor[1]/255, vertexColor[2]/255);
             if (h < minZ_mesh) minZ_mesh = h;
           }
         }
@@ -114,10 +125,13 @@ onmessage = async (e) => {
           }
         }
 
-        const numTopVerts = blockVerts.length / 3;
+        // Generate Skirt & Base
+        const numTopVerts = blockVertsAndColors.length / 6;
         for (let i = 0; i < numTopVerts; i++) {
-            blockVerts.push(blockVerts[i*3], baseZ, blockVerts[i*3+2]);
-            blockColors.push(0.2, 0.2, 0.2, 1.0); 
+            // Read original X and Z, set Y to baseZ, set color to grey (0.2)
+            const origX = blockVertsAndColors[i*6];
+            const origZ = blockVertsAndColors[i*6 + 2];
+            blockVertsAndColors.push(origX, baseZ, origZ, 0.2, 0.2, 0.2);
         }
 
         for (let j = 0; j < gridResX; j++) {
@@ -146,13 +160,43 @@ onmessage = async (e) => {
         blockFaces.push(numTopVerts, numTopVerts + gridResX, numTopVerts + numTopVerts - 1);
         blockFaces.push(numTopVerts, numTopVerts + numTopVerts - 1, numTopVerts + numTopVerts - 1 - gridResX);
 
-        // Bypass Manifold and return the raw arrays to guarantee vertex/color count match
-        pieces.push({
+        try {
+          const meshObj = new Mesh({
+            vertProperties: new Float32Array(blockVertsAndColors),
+            numProp: 6, // Crucial: Tells Manifold we have X,Y,Z + R,G,B
+            triVerts: new Uint32Array(blockFaces),
+            runIndex: new Uint32Array([0, blockFaces.length / 3]),
+            runOriginalID: new Uint32Array([0]),
+            runTransform: new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0]),
+          });
+          
+          let manifoldSolid = new Manifold(meshObj);
+          let outMesh = manifoldSolid.getMesh();
+          
+          // Unpack the optimized mesh back into separate position and color arrays for the Three.js viewer
+          const finalVerts = new Float32Array((outMesh.vertProperties.length / 6) * 3);
+          const finalColors = new Float32Array((outMesh.vertProperties.length / 6) * 3);
+          
+          let vIdx = 0, cIdx = 0;
+          for (let i = 0; i < outMesh.vertProperties.length; i += 6) {
+              finalVerts[vIdx++] = outMesh.vertProperties[i];
+              finalVerts[vIdx++] = outMesh.vertProperties[i+1];
+              finalVerts[vIdx++] = outMesh.vertProperties[i+2];
+              
+              finalColors[cIdx++] = outMesh.vertProperties[i+3];
+              finalColors[cIdx++] = outMesh.vertProperties[i+4];
+              finalColors[cIdx++] = outMesh.vertProperties[i+5];
+          }
+
+          pieces.push({
             id: `piece_${pr}_${pc}`,
-            vertexArray: new Float32Array(blockVerts),
-            indexArray: new Uint32Array(blockFaces),
-            colorArray: new Float32Array(blockColors) 
-        });
+            vertexArray: finalVerts,
+            indexArray: outMesh.triVerts,
+            colorArray: finalColors 
+          });
+        } catch (e) {
+          console.error("Manifold Boolean failed on piece", pr, pc);
+        }
       }
     }
 

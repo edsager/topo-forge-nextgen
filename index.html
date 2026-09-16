@@ -17,7 +17,6 @@
     #map-view, #three-view { flex: 1; position: relative; }
     #three-view { border-left: 2px solid #444; }
     
-    /* Custom Filament Color Palette */
     .color-picker-group { display: flex; align-items: center; gap: 8px; border: 1px solid #555; padding: 4px 8px; border-radius: 4px; background: #222; }
     .color-picker-group label { font-size: 12px; display: flex; align-items: center; gap: 5px; cursor: pointer; }
     input[type="color"] { padding: 0; margin: 0; border: none; width: 24px; height: 24px; cursor: pointer; background: transparent; }
@@ -38,8 +37,6 @@
       </select>
 
       <label>Z-Scale: <input type="range" id="z-exaggeration" min="0.5" max="3" step="0.1" value="1.5"/> <span id="z-val">1.5x</span></label>
-      
-      <button id="preview-roads-btn" style="background: #e67e22;">Preview Roads on Map</button>
     </div>
     
     <div class="toolbar-row">
@@ -66,7 +63,6 @@
     </div>
 
     <div class="toolbar-row">
-      <!-- The 7 Color Filament Palette -->
       <div class="color-picker-group">
         <label>Water <input type="color" id="col-water" value="#1E90FF"></label>
         <label>Dirt <input type="color" id="col-dirt" value="#8B4513"></label>
@@ -78,7 +74,7 @@
       </div>
 
       <label><input type="checkbox" id="toggle-bathymetry" /> Enable Bathymetry</label>
-      <label><input type="checkbox" id="include-roads" checked /> Include Major Roads</label>
+      <label><input type="checkbox" id="include-roads" checked /> Include Infrastructure</label>
       <button id="load-gpx-btn">Load Trails (.gpx)</button>
       <span id="gpx-status" style="display:none; color: #4CAF50; font-size: 0.9em;"></span>
       
