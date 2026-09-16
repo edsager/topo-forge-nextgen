@@ -1,4 +1,7 @@
 // src/workers/mesh.worker.ts
+import manifoldModule from 'manifold-3d';
+
+let manifoldInstance: any = null;
 
 function hexToRgb(hex: string): [number, number, number] {
     const bigint = parseInt(hex.replace('#', ''), 16);
@@ -9,10 +12,21 @@ onmessage = async (e) => {
   const { action, payload } = e.data;
   if (action !== 'GENERATE_PUZZLE') return;
 
+  if (!manifoldInstance) {
+    try {
+      manifoldInstance = await manifoldModule();
+      manifoldInstance.setup();
+    } catch (err) {
+      postMessage({ status: 'ERROR', error: 'Failed to initialize Manifold3D.' });
+      return;
+    }
+  }
+
+  const { Manifold, Mesh } = manifoldInstance;
   const { 
     zExaggeration, elevationData, elevRows, elevCols, 
     landCoverMask, maskWidth, maskHeight, 
-    bbox, 
+    bbox,
     puzzleRows, puzzleCols, pieceWidth, pieceDepth, tolerance, waterDrop, colors
   } = payload;
 
@@ -33,19 +47,21 @@ onmessage = async (e) => {
     const cRock = hexToRgb(colors.rock);
     const cSnow = hexToRgb(colors.snow);
 
-    // FIX 1: Calculate real-world scale so mountains aren't 4 feet tall on the screen!
-    const latMid = (bbox.north + bbox.south) / 2;
+    // Failsafe calculations to scale the physical world down to your 3D printer bed
+    const latMid = (bbox && bbox.north && bbox.south) ? (bbox.north + bbox.south) / 2 : 40;
     const cosLat = Math.cos(latMid * Math.PI / 180);
-    const realWorldWidthMeters = (bbox.east - bbox.west) * 111320 * cosLat;
+    const east = (bbox && bbox.east) ? bbox.east : 0;
+    const west = (bbox && bbox.west) ? bbox.west : 0;
+    const realWorldWidthMeters = Math.max(1, (east - west) * 111320 * cosLat);
     const totalW = pieceWidth * puzzleCols;
-    const scaleY = totalW / realWorldWidthMeters; // Converts meters to scaled millimeters
+    const scaleY = totalW / realWorldWidthMeters;
 
     for (let pr = 0; pr < puzzleRows; pr++) {
       for (let pc = 0; pc < puzzleCols; pc++) {
         
-        const blockVerts = [];
-        const blockFaces = [];
-        const blockColors = [];
+        // Explicitly telling TypeScript these are arrays of numbers to fix the compiler error
+        const blockVertsAndColors: number[] = []; 
+        const blockFaces: number[] = [];
         const gridResX = 40; 
         const gridResY = 40; 
         
@@ -69,10 +85,13 @@ onmessage = async (e) => {
 
             const elevX = Math.floor(globalFracX * (eCols - 1));
             const elevY = Math.floor(globalFracY * (eRows - 1));
-            const elevIdx = Math.max(0, Math.min(elevPoints.length - 1, elevY * eCols + elevX));
+            const elevIdx = Math.max(0, Math.min((elevPoints.length || 1) - 1, elevY * eCols + elevX));
             
-            // APPLY THE Y-SCALE HERE
-            let h = elevPoints[elevIdx] * scaleY * zExaggeration;
+            const rawHeight = elevPoints[elevIdx] || 0;
+            let h = rawHeight * scaleY * zExaggeration;
+            
+            if (isNaN(h)) h = 0; // Absolute failsafe against missing data
+
             let vertexColor = cDirt;
 
             if (maskPoints && maskPoints.length > 0) {
@@ -80,9 +99,9 @@ onmessage = async (e) => {
                 const maskY = Math.floor(globalFracY * (mRows - 1));
                 const maskIdx = (maskY * mCols + maskX) * 4;
                 
-                const r = maskPoints[maskIdx];
-                const g = maskPoints[maskIdx + 1];
-                const b = maskPoints[maskIdx + 2];
+                const r = maskPoints[maskIdx] || 0;
+                const g = maskPoints[maskIdx + 1] || 0;
+                const b = maskPoints[maskIdx + 2] || 0;
                 
                 let isWater = (r < 50 && g < 50 && b > 150); 
                 
@@ -91,25 +110,21 @@ onmessage = async (e) => {
                     vertexColor = cWater;
                 } else if (g > 150 && r < 100) {
                     vertexColor = cForest;
-                } else if (elevPoints[elevIdx] > 2000) { // Check real absolute elevation for snow
+                } else if (rawHeight > 2000) {
                     vertexColor = cSnow;
-                } else if (elevPoints[elevIdx] > 1000) { // Check real absolute elevation for rock
+                } else if (rawHeight > 1000) {
                     vertexColor = cRock;
                 }
             }
 
-            blockVerts.push(localX, h, localZ);
-            
-            // FIX 2: Only push 3 values (RGB) so the color buffer matches perfectly
-            blockColors.push(vertexColor[0]/255, vertexColor[1]/255, vertexColor[2]/255);
-            
+            // Pushing exactly 6 values into the array (X,Y,Z, R,G,B)
+            blockVertsAndColors.push(localX, h, localZ, vertexColor[0]/255, vertexColor[1]/255, vertexColor[2]/255);
             if (h < minZ_mesh) minZ_mesh = h;
           }
         }
 
         const baseZ = Math.min(-10, minZ_mesh - 10);
 
-        // Top Faces
         for (let i = 0; i < gridResY; i++) {
           for (let j = 0; j < gridResX; j++) {
             const v0 = i * (gridResX + 1) + j;
@@ -122,14 +137,13 @@ onmessage = async (e) => {
           }
         }
 
-        // Skirt/Base Vertices
-        const numTopVerts = blockVerts.length / 3;
+        const numTopVerts = blockVertsAndColors.length / 6;
         for (let i = 0; i < numTopVerts; i++) {
-            blockVerts.push(blockVerts[i*3], baseZ, blockVerts[i*3+2]);
-            blockColors.push(0.2, 0.2, 0.2); // RGB dark grey for the base
+            const origX = blockVertsAndColors[i*6];
+            const origZ = blockVertsAndColors[i*6 + 2];
+            blockVertsAndColors.push(origX, baseZ, origZ, 0.2, 0.2, 0.2); 
         }
 
-        // Wall Faces
         for (let j = 0; j < gridResX; j++) {
             const v0 = j, v1 = j + 1;
             const b0 = v0 + numTopVerts, b1 = v1 + numTopVerts;
@@ -153,18 +167,47 @@ onmessage = async (e) => {
             const b0 = v0 + numTopVerts, b1 = v1 + numTopVerts;
             blockFaces.push(v0, v1, b0); blockFaces.push(v1, b1, b0);
         }
-        
-        // Bottom Faces
         blockFaces.push(numTopVerts, numTopVerts + gridResX, numTopVerts + numTopVerts - 1);
         blockFaces.push(numTopVerts, numTopVerts + numTopVerts - 1, numTopVerts + numTopVerts - 1 - gridResX);
 
-        // Output raw arrays directly to Three.js viewer
-        pieces.push({
-          id: `piece_${pr}_${pc}`,
-          vertexArray: new Float32Array(blockVerts),
-          indexArray: new Uint32Array(blockFaces),
-          colorArray: new Float32Array(blockColors) 
-        });
+        try {
+          // Handing the heavy geometry over to Manifold to optimize
+          const meshObj = new Mesh({
+            vertProperties: new Float32Array(blockVertsAndColors),
+            numProp: 6, // CRUCIAL: Tells Manifold it holds 3 positions + 3 colors
+            triVerts: new Uint32Array(blockFaces),
+            runIndex: new Uint32Array([0, blockFaces.length / 3]),
+            runOriginalID: new Uint32Array([0]),
+            runTransform: new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0]),
+          });
+          
+          let manifoldSolid = new Manifold(meshObj);
+          let outMesh = manifoldSolid.getMesh();
+          
+          // Unpacking Manifold's optimized output back into separate files for Three.js
+          const finalVerts = new Float32Array((outMesh.vertProperties.length / 6) * 3);
+          const finalColors = new Float32Array((outMesh.vertProperties.length / 6) * 3);
+          
+          let vIdx = 0, cIdx = 0;
+          for (let i = 0; i < outMesh.vertProperties.length; i += 6) {
+              finalVerts[vIdx++] = outMesh.vertProperties[i];
+              finalVerts[vIdx++] = outMesh.vertProperties[i+1];
+              finalVerts[vIdx++] = outMesh.vertProperties[i+2];
+              
+              finalColors[cIdx++] = outMesh.vertProperties[i+3];
+              finalColors[cIdx++] = outMesh.vertProperties[i+4];
+              finalColors[cIdx++] = outMesh.vertProperties[i+5];
+          }
+
+          pieces.push({
+            id: `piece_${pr}_${pc}`,
+            vertexArray: finalVerts,
+            indexArray: outMesh.triVerts,
+            colorArray: finalColors 
+          });
+        } catch (e) {
+          console.error("Manifold Boolean failed on piece", pr, pc);
+        }
       }
     }
 
