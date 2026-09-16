@@ -1,7 +1,4 @@
 // src/workers/mesh.worker.ts
-import manifoldModule from 'manifold-3d';
-
-let manifoldInstance: any = null;
 
 function hexToRgb(hex: string): [number, number, number] {
     const bigint = parseInt(hex.replace('#', ''), 16);
@@ -12,17 +9,6 @@ onmessage = async (e) => {
   const { action, payload } = e.data;
   if (action !== 'GENERATE_PUZZLE') return;
 
-  if (!manifoldInstance) {
-    try {
-      manifoldInstance = await manifoldModule();
-      manifoldInstance.setup();
-    } catch (err) {
-      postMessage({ status: 'ERROR', error: 'Failed to initialize Manifold3D.' });
-      return;
-    }
-  }
-
-  const { Manifold, Mesh } = manifoldInstance;
   const { 
     zExaggeration, elevationData, elevRows, elevCols, 
     landCoverMask, maskWidth, maskHeight, 
@@ -47,7 +33,7 @@ onmessage = async (e) => {
     const cRock = hexToRgb(colors.rock);
     const cSnow = hexToRgb(colors.snow);
 
-    // Failsafe calculations to scale the physical world down to your 3D printer bed
+    // Scaling real-world elevation down to your printer bed size
     const latMid = (bbox && bbox.north && bbox.south) ? (bbox.north + bbox.south) / 2 : 40;
     const cosLat = Math.cos(latMid * Math.PI / 180);
     const east = (bbox && bbox.east) ? bbox.east : 0;
@@ -59,11 +45,13 @@ onmessage = async (e) => {
     for (let pr = 0; pr < puzzleRows; pr++) {
       for (let pc = 0; pc < puzzleCols; pc++) {
         
-        // Explicitly telling TypeScript these are arrays of numbers to fix the compiler error
-        const blockVertsAndColors: number[] = []; 
+        const blockVerts: number[] = []; 
+        const blockColors: number[] = [];
         const blockFaces: number[] = [];
-        const gridResX = 40; 
-        const gridResY = 40; 
+        
+        // Lowered resolution to prevent the OBJ text exporter from freezing the browser
+        const gridResX = 25; 
+        const gridResY = 25; 
         
         const pieceMinX = (pc * pieceWidth) - (pieceWidth / 2 * (puzzleCols - 1)) + (tolerance / 2);
         const pieceMaxX = pieceMinX + pieceWidth - tolerance;
@@ -90,7 +78,7 @@ onmessage = async (e) => {
             const rawHeight = elevPoints[elevIdx] || 0;
             let h = rawHeight * scaleY * zExaggeration;
             
-            if (isNaN(h)) h = 0; // Absolute failsafe against missing data
+            if (isNaN(h)) h = 0;
 
             let vertexColor = cDirt;
 
@@ -117,8 +105,8 @@ onmessage = async (e) => {
                 }
             }
 
-            // Pushing exactly 6 values into the array (X,Y,Z, R,G,B)
-            blockVertsAndColors.push(localX, h, localZ, vertexColor[0]/255, vertexColor[1]/255, vertexColor[2]/255);
+            blockVerts.push(localX, h, localZ);
+            blockColors.push(vertexColor[0]/255, vertexColor[1]/255, vertexColor[2]/255);
             if (h < minZ_mesh) minZ_mesh = h;
           }
         }
@@ -137,11 +125,10 @@ onmessage = async (e) => {
           }
         }
 
-        const numTopVerts = blockVertsAndColors.length / 6;
+        const numTopVerts = blockVerts.length / 3;
         for (let i = 0; i < numTopVerts; i++) {
-            const origX = blockVertsAndColors[i*6];
-            const origZ = blockVertsAndColors[i*6 + 2];
-            blockVertsAndColors.push(origX, baseZ, origZ, 0.2, 0.2, 0.2); 
+            blockVerts.push(blockVerts[i*3], baseZ, blockVerts[i*3+2]);
+            blockColors.push(0.2, 0.2, 0.2); 
         }
 
         for (let j = 0; j < gridResX; j++) {
@@ -167,47 +154,17 @@ onmessage = async (e) => {
             const b0 = v0 + numTopVerts, b1 = v1 + numTopVerts;
             blockFaces.push(v0, v1, b0); blockFaces.push(v1, b1, b0);
         }
+        
         blockFaces.push(numTopVerts, numTopVerts + gridResX, numTopVerts + numTopVerts - 1);
         blockFaces.push(numTopVerts, numTopVerts + numTopVerts - 1, numTopVerts + numTopVerts - 1 - gridResX);
 
-        try {
-          // Handing the heavy geometry over to Manifold to optimize
-          const meshObj = new Mesh({
-            vertProperties: new Float32Array(blockVertsAndColors),
-            numProp: 6, // CRUCIAL: Tells Manifold it holds 3 positions + 3 colors
-            triVerts: new Uint32Array(blockFaces),
-            runIndex: new Uint32Array([0, blockFaces.length / 3]),
-            runOriginalID: new Uint32Array([0]),
-            runTransform: new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0]),
-          });
-          
-          let manifoldSolid = new Manifold(meshObj);
-          let outMesh = manifoldSolid.getMesh();
-          
-          // Unpacking Manifold's optimized output back into separate files for Three.js
-          const finalVerts = new Float32Array((outMesh.vertProperties.length / 6) * 3);
-          const finalColors = new Float32Array((outMesh.vertProperties.length / 6) * 3);
-          
-          let vIdx = 0, cIdx = 0;
-          for (let i = 0; i < outMesh.vertProperties.length; i += 6) {
-              finalVerts[vIdx++] = outMesh.vertProperties[i];
-              finalVerts[vIdx++] = outMesh.vertProperties[i+1];
-              finalVerts[vIdx++] = outMesh.vertProperties[i+2];
-              
-              finalColors[cIdx++] = outMesh.vertProperties[i+3];
-              finalColors[cIdx++] = outMesh.vertProperties[i+4];
-              finalColors[cIdx++] = outMesh.vertProperties[i+5];
-          }
-
-          pieces.push({
-            id: `piece_${pr}_${pc}`,
-            vertexArray: finalVerts,
-            indexArray: outMesh.triVerts,
-            colorArray: finalColors 
-          });
-        } catch (e) {
-          console.error("Manifold Boolean failed on piece", pr, pc);
-        }
+        // Raw output bypasses Manifold entirely, preventing the WebAssembly crash
+        pieces.push({
+          id: `piece_${pr}_${pc}`,
+          vertexArray: new Float32Array(blockVerts),
+          indexArray: new Uint32Array(blockFaces),
+          colorArray: new Float32Array(blockColors) 
+        });
       }
     }
 
