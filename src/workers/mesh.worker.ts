@@ -5,6 +5,38 @@ function hexToRgb(hex: string): [number, number, number] {
     return [(bigint >> 16) & 255, (bigint >> 8) & 255, bigint & 255];
 }
 
+// Math helpers to extrude roads and buildings
+function pointInPolygon(px: number, py: number, polygon: {x:number, y:number}[]) {
+    let inside = false;
+    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+        const xi = polygon[i].x, yi = polygon[i].y;
+        const xj = polygon[j].x, yj = polygon[j].y;
+        const intersect = ((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi);
+        if (intersect) inside = !inside;
+    }
+    return inside;
+}
+
+function pointNearLine(px: number, py: number, line: {x:number, y:number}[], tol: number) {
+    for (let i = 0; i < line.length - 1; i++) {
+        const x1 = line[i].x, y1 = line[i].y;
+        const x2 = line[i+1].x, y2 = line[i+1].y;
+        const A = px - x1, B = py - y1;
+        const C = x2 - x1, D = y2 - y1;
+        const dot = A * C + B * D;
+        const lenSq = C * C + D * D;
+        let param = -1;
+        if (lenSq !== 0) param = dot / lenSq;
+        let xx, yy;
+        if (param < 0) { xx = x1; yy = y1; }
+        else if (param > 1) { xx = x2; yy = y2; }
+        else { xx = x1 + param * C; yy = y1 + param * D; }
+        const dx = px - xx, dy = py - yy;
+        if (dx * dx + dy * dy < tol * tol) return true;
+    }
+    return false;
+}
+
 onmessage = async (e) => {
   const { action, payload } = e.data;
   if (action !== 'GENERATE_PUZZLE') return;
@@ -12,12 +44,12 @@ onmessage = async (e) => {
   const { 
     zExaggeration, elevationData, elevRows, elevCols, 
     landCoverMask, maskWidth, maskHeight, 
-    bbox,
+    infrastructureData, bbox,
     puzzleRows, puzzleCols, pieceWidth, pieceDepth, tolerance, waterDrop, colors
   } = payload;
 
   try {
-    const elevPoints = elevationData.data || elevationData;
+    const elevPoints = elevationData.data || elevationData || [];
     const eCols = elevationData.cols || elevationData.width || elevCols;
     const eRows = elevationData.rows || elevationData.height || elevRows;
 
@@ -32,6 +64,17 @@ onmessage = async (e) => {
     const cForest = hexToRgb(colors.forest);
     const cRock = hexToRgb(colors.rock);
     const cSnow = hexToRgb(colors.snow);
+    const cBldgs = hexToRgb(colors.buildings);
+    const cRoads = hexToRgb(colors.roads);
+
+    // Find absolute minimum elevation to subtract the "floor" and prevent massive thick blocks
+    let minElev = Infinity;
+    for (let i = 0; i < elevPoints.length; i++) {
+        if (elevPoints[i] !== undefined && !isNaN(elevPoints[i]) && elevPoints[i] < minElev) {
+            minElev = elevPoints[i];
+        }
+    }
+    if (minElev === Infinity) minElev = 0;
 
     const latMid = (bbox && bbox.north && bbox.south) ? (bbox.north + bbox.south) / 2 : 40;
     const cosLat = Math.cos(latMid * Math.PI / 180);
@@ -40,6 +83,22 @@ onmessage = async (e) => {
     const realWorldWidthMeters = Math.max(1, (east - west) * 111320 * cosLat);
     const totalW = pieceWidth * puzzleCols;
     const scaleY = totalW / realWorldWidthMeters;
+
+    // Parse OpenStreetMap Vectors
+    const buildings: {x:number, y:number}[][] = [];
+    const roads: {x:number, y:number}[][] = [];
+    if (infrastructureData && infrastructureData.elements) {
+        for (const el of infrastructureData.elements) {
+            if (el.type === 'way' && el.geometry) {
+                const pts = el.geometry.map((g: any) => ({
+                    x: (g.lon - bbox.west) / (east - west),
+                    y: (bbox.north - g.lat) / (bbox.north - bbox.south)
+                }));
+                if (el.tags && el.tags.building) buildings.push(pts);
+                else if (el.tags && el.tags.highway) roads.push(pts);
+            }
+        }
+    }
 
     for (let pr = 0; pr < puzzleRows; pr++) {
       for (let pc = 0; pc < puzzleCols; pc++) {
@@ -74,12 +133,14 @@ onmessage = async (e) => {
             const elevIdx = Math.max(0, Math.min((elevPoints.length || 1) - 1, elevY * eCols + elevX));
             
             const rawHeight = elevPoints[elevIdx] || 0;
-            let h = rawHeight * scaleY * zExaggeration;
             
+            // Subtracting the lowest point so the map sits flush on the build plate!
+            let h = (rawHeight - minElev) * scaleY * zExaggeration;
             if (isNaN(h)) h = 0;
 
             let vertexColor = cDirt;
 
+            // Apply Land Cover colors
             if (maskPoints && maskPoints.length > 0) {
                 const maskX = Math.floor(globalFracX * (mCols - 1));
                 const maskY = Math.floor(globalFracY * (mRows - 1));
@@ -103,6 +164,27 @@ onmessage = async (e) => {
                 }
             }
 
+            // EXTRUDE BUILDINGS AND ROADS!
+            let isBldg = false;
+            let isRoad = false;
+            
+            for (const bldg of buildings) {
+                if (pointInPolygon(globalFracX, globalFracY, bldg)) { isBldg = true; break; }
+            }
+            if (!isBldg) {
+                for (const rd of roads) {
+                    if (pointNearLine(globalFracX, globalFracY, rd, 0.0015)) { isRoad = true; break; }
+                }
+            }
+            
+            if (isBldg) {
+                h += (10 * scaleY * zExaggeration); // Extrude Buildings up 10m
+                vertexColor = cBldgs;
+            } else if (isRoad) {
+                h += (0.5 * scaleY * zExaggeration); // Raise Roads slightly so they don't print under dirt
+                vertexColor = cRoads;
+            }
+
             blockVerts.push(localX, h, localZ);
             blockColors.push(vertexColor[0]/255, vertexColor[1]/255, vertexColor[2]/255);
             if (h < minZ_mesh) minZ_mesh = h;
@@ -111,7 +193,7 @@ onmessage = async (e) => {
 
         const baseZ = Math.min(-10, minZ_mesh - 10);
 
-        // FIX 1: Counter-Clockwise Winding (Mesh is now visible and solid!)
+        // Correct Counter-Clockwise Winding (Makes the geometry visible in the browser!)
         for (let i = 0; i < gridResY; i++) {
           for (let j = 0; j < gridResX; j++) {
             const v0 = i * (gridResX + 1) + j;
@@ -119,8 +201,8 @@ onmessage = async (e) => {
             const v2 = (i + 1) * (gridResX + 1) + j;
             const v3 = v2 + 1;
 
-            blockFaces.push(v0, v1, v2);
-            blockFaces.push(v2, v1, v3);
+            blockFaces.push(v0, v2, v1);
+            blockFaces.push(v1, v2, v3);
           }
         }
 
@@ -130,7 +212,7 @@ onmessage = async (e) => {
             blockColors.push(0.2, 0.2, 0.2); 
         }
 
-        // Properly wound Skirt Faces
+        // Correctly Wound Skirt/Base
         for (let j = 0; j < gridResX; j++) {
             const v0 = j, v1 = j + 1;
             const b0 = v0 + numTopVerts, b1 = v1 + numTopVerts;
