@@ -1,7 +1,7 @@
 // src/workers/mesh.worker.ts
 
 function hexToRgb(hex: string): [number, number, number] {
-    if (!hex) return [128, 128, 128]; // Failsafe
+    if (!hex) return [128, 128, 128]; 
     const bigint = parseInt(hex.replace('#', ''), 16);
     return [(bigint >> 16) & 255, (bigint >> 8) & 255, bigint & 255];
 }
@@ -25,7 +25,6 @@ onmessage = async (e) => {
     const eCols = payload.elevCols || elevData.width || 1;
     const eRows = payload.elevRows || elevData.height || 1;
 
-    // FIX 1: Properly unpacking the Land Cover data so colors actually apply!
     const maskData = payload.landCoverMask || {};
     const maskPoints = maskData.data || maskData || [];
     const mCols = payload.maskWidth || maskData.width || 1;
@@ -39,7 +38,6 @@ onmessage = async (e) => {
     const cRock = hexToRgb(payload.colors?.rock || '#808080');
     const cSnow = hexToRgb(payload.colors?.snow || '#FFFFFF');
 
-    // FIX 2: Find absolute minimum elevation so we can subtract the sea-level floor
     let minElev = Infinity;
     for (let i = 0; i < elevPoints.length; i++) {
         const val = elevPoints[i];
@@ -49,13 +47,14 @@ onmessage = async (e) => {
     }
     if (minElev === Infinity) minElev = 0;
 
-    // Mathematical real-world scaling
     const latMid = (bbox && bbox.north && bbox.south) ? (bbox.north + bbox.south) / 2 : 40;
     const cosLat = Math.cos(latMid * Math.PI / 180);
     const east = (bbox && bbox.east) ? bbox.east : 0;
     const west = (bbox && bbox.west) ? bbox.west : 0;
     const realWorldWidthMeters = Math.max(1, (east - west) * 111320 * cosLat);
+    
     const totalW = pWidth * pCols;
+    const totalD = pDepth * pRows;
     const scaleY = totalW / realWorldWidthMeters;
 
     for (let pr = 0; pr < pRows; pr++) {
@@ -67,9 +66,10 @@ onmessage = async (e) => {
         const gridResX = 40; 
         const gridResY = 40; 
         
-        const pieceMinX = (pc * pWidth) - (pWidth / 2 * (pCols - 1)) + (tol / 2);
+        // THE FIX: Properly centering the grid at absolute 0,0 so the coordinates align with the data
+        const pieceMinX = -totalW / 2 + (pc * pWidth) + (tol / 2);
         const pieceMaxX = pieceMinX + pWidth - tol;
-        const pieceMinZ = (pr * pDepth) - (pDepth / 2 * (pRows - 1)) + (tol / 2);
+        const pieceMinZ = -totalD / 2 + (pr * pDepth) + (tol / 2);
         const pieceMaxZ = pieceMinZ + pDepth - tol;
 
         let minZ_mesh = Infinity;
@@ -83,7 +83,7 @@ onmessage = async (e) => {
             const localX = pieceMinX + fracX * (pieceMaxX - pieceMinX);
 
             const globalFracX = (localX + totalW / 2) / totalW;
-            const globalFracY = (localZ + (pDepth * pRows) / 2) / (pDepth * pRows);
+            const globalFracY = (localZ + totalD / 2) / totalD;
 
             const elevX = Math.floor(globalFracX * (eCols - 1));
             const elevY = Math.floor(globalFracY * (eRows - 1));
@@ -93,13 +93,11 @@ onmessage = async (e) => {
             let rawElev = elevPoints[elevIdx];
             if (rawElev === undefined || isNaN(rawElev)) rawElev = minElev;
 
-            // Subtract floor and apply accurate scaling!
             let h = (rawElev - minElev) * scaleY * zEx; 
             if (isNaN(h)) h = 0;
 
             let vertexColor = cDirt;
 
-            // Apply Land Cover Mask
             if (maskPoints && maskPoints.length > 0) {
                 const maskX = Math.floor(globalFracX * (mCols - 1));
                 const maskY = Math.floor(globalFracY * (mRows - 1));
@@ -134,7 +132,6 @@ onmessage = async (e) => {
 
         const baseZ = Math.min(-5, minZ_mesh - 5);
 
-        // Correct counter-clockwise triangle winding for browser visibility
         for (let i = 0; i < gridResY; i++) {
           for (let j = 0; j < gridResX; j++) {
             const v0 = i * (gridResX + 1) + j;
@@ -177,7 +174,6 @@ onmessage = async (e) => {
             blockFaces.push(v0, v1, b0); blockFaces.push(v1, b1, b0);
         }
         
-        // Solid bottom cap
         const bTL = numTopVerts;
         const bTR = numTopVerts + gridResX;
         const bBL = numTopVerts + gridResY * (gridResX + 1);
