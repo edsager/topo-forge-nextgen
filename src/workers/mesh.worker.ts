@@ -1,7 +1,4 @@
 // src/workers/mesh.worker.ts
-import manifoldModule from 'manifold-3d';
-
-let manifoldInstance: any = null;
 
 function hexToRgb(hex: string): [number, number, number] {
     const bigint = parseInt(hex.replace('#', ''), 16);
@@ -12,32 +9,21 @@ onmessage = async (e) => {
   const { action, payload } = e.data;
   if (action !== 'GENERATE_PUZZLE') return;
 
-  if (!manifoldInstance) {
-    try {
-      manifoldInstance = await manifoldModule();
-      manifoldInstance.setup();
-    } catch (err) {
-      postMessage({ status: 'ERROR', error: 'Failed to initialize Manifold3D.' });
-      return;
-    }
-  }
-
-  const { Manifold, Mesh } = manifoldInstance;
-const { 
+  const { 
     zExaggeration, elevationData, elevRows, elevCols, 
     landCoverMask, maskWidth, maskHeight, 
     puzzleRows, puzzleCols, pieceWidth, pieceDepth, tolerance, waterDrop, colors
   } = payload;
 
   try {
-    // Defensive extraction to completely prevent 'undefined' length errors
     const elevPoints = elevationData.data || elevationData;
     const eCols = elevationData.cols || elevationData.width || elevCols;
     const eRows = elevationData.rows || elevationData.height || elevRows;
 
-    const maskPoints = landCoverMask.data || landCoverMask;
-    const mCols = landCoverMask.cols || landCoverMask.width || maskWidth;
-    const mRows = landCoverMask.rows || landCoverMask.height || maskHeight;
+    // Failsafe in case Copernicus data is temporarily unavailable
+    const maskPoints = landCoverMask ? (landCoverMask.data || landCoverMask) : null;
+    const mCols = landCoverMask ? (landCoverMask.cols || landCoverMask.width || maskWidth) : 1;
+    const mRows = landCoverMask ? (landCoverMask.rows || landCoverMask.height || maskHeight) : 1;
 
     const pieces = [];
 
@@ -46,7 +32,6 @@ const {
     const cForest = hexToRgb(colors.forest);
     const cRock = hexToRgb(colors.rock);
     const cSnow = hexToRgb(colors.snow);
-    // const cRoads = hexToRgb(colors.roads);
 
     for (let pr = 0; pr < puzzleRows; pr++) {
       for (let pc = 0; pc < puzzleCols; pc++) {
@@ -80,27 +65,33 @@ const {
             const elevIdx = Math.max(0, Math.min(elevPoints.length - 1, elevY * eCols + elevX));
             
             let h = elevPoints[elevIdx] * zExaggeration;
-            
-            const maskX = Math.floor(globalFracX * (mCols - 1));
-            const maskY = Math.floor(globalFracY * (mRows - 1));
-            const maskIdx = (maskY * mCols + maskX) * 4;
-            
-            const r = maskPoints[maskIdx];
-            const g = maskPoints[maskIdx + 1];
-            const b = maskPoints[maskIdx + 2];
-            
-            let isWater = (r < 50 && g < 50 && b > 150); 
             let vertexColor = cDirt;
 
-            if (isWater) {
-                h -= waterDrop;
-                vertexColor = cWater;
-            } else if (g > 150 && r < 100) {
-                vertexColor = cForest;
-            } else if (h > 2000 * zExaggeration) {
-                vertexColor = cSnow;
-            } else if (h > 1000 * zExaggeration) {
-                vertexColor = cRock;
+            if (maskPoints) {
+                const maskX = Math.floor(globalFracX * (mCols - 1));
+                const maskY = Math.floor(globalFracY * (mRows - 1));
+                const maskIdx = (maskY * mCols + maskX) * 4;
+                
+                const r = maskPoints[maskIdx];
+                const g = maskPoints[maskIdx + 1];
+                const b = maskPoints[maskIdx + 2];
+                
+                let isWater = (r < 50 && g < 50 && b > 150); 
+                
+                if (isWater) {
+                    h -= waterDrop;
+                    vertexColor = cWater;
+                } else if (g > 150 && r < 100) {
+                    vertexColor = cForest;
+                } else if (h > 2000 * zExaggeration) {
+                    vertexColor = cSnow;
+                } else if (h > 1000 * zExaggeration) {
+                    vertexColor = cRock;
+                }
+            } else {
+                // If land cover fails, color strictly by height
+                if (h > 2000 * zExaggeration) vertexColor = cSnow;
+                else if (h > 1000 * zExaggeration) vertexColor = cRock;
             }
 
             blockVerts.push(localX, h, localZ);
@@ -155,27 +146,13 @@ const {
         blockFaces.push(numTopVerts, numTopVerts + gridResX, numTopVerts + numTopVerts - 1);
         blockFaces.push(numTopVerts, numTopVerts + numTopVerts - 1, numTopVerts + numTopVerts - 1 - gridResX);
 
-        try {
-          const meshObj = new Mesh({
-            vertProperties: new Float32Array(blockVerts),
-            numProp: 3,
-            triVerts: new Uint32Array(blockFaces),
-            runIndex: new Uint32Array([0, blockFaces.length / 3]),
-            runOriginalID: new Uint32Array([0]),
-            runTransform: new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0]),
-          });
-          
-          let manifoldSolid = new Manifold(meshObj);
-          
-          pieces.push({
+        // Bypass Manifold and return the raw arrays to guarantee vertex/color count match
+        pieces.push({
             id: `piece_${pr}_${pc}`,
-            vertexArray: manifoldSolid.getMesh().vertProperties,
-            indexArray: manifoldSolid.getMesh().triVerts,
+            vertexArray: new Float32Array(blockVerts),
+            indexArray: new Uint32Array(blockFaces),
             colorArray: new Float32Array(blockColors) 
-          });
-        } catch (e) {
-          console.error("Manifold Boolean failed on piece", pr, pc);
-        }
+        });
       }
     }
 

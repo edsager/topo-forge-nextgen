@@ -120,7 +120,7 @@ clearGpxBtn.addEventListener('click', () => {
     if (statusText) statusText.innerText = "Trail cleared.";
 });
 
-// Robust POST Request for Road & Building Preview
+// Browser-friendly GET Request for Preview
 previewRoadsBtn?.addEventListener('click', async () => {
     const bbox = projectState.bbox;
     if (!bbox) return;
@@ -133,22 +133,12 @@ previewRoadsBtn?.addEventListener('click', async () => {
     previewRoadsBtn.disabled = true;
 
     try {
-        // Querying both Roads and Buildings
         const query = `[out:json];(way["highway"~"motorway|trunk|primary|secondary"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});way["building"](${bbox.south},${bbox.west},${bbox.north},${bbox.east}););out geom;`;
         
-        const res = await fetch(`https://overpass-api.de/api/interpreter`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: `data=${encodeURIComponent(query)}`
-        });
-
-        const text = await res.text();
-        let data;
-        try {
-            data = JSON.parse(text);
-        } catch(err) {
-            throw new Error(`Server returned non-JSON (Rate limit or busy).`);
-        }
+        const res = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`);
+        
+        if (!res.ok) throw new Error(`Server returned ${res.status}`);
+        const data = await res.json();
         
         if (!data?.elements || data.elements.length === 0) {
             statusText.innerText = `No roads or buildings found in this area.`;
@@ -270,16 +260,10 @@ generateBtn?.addEventListener('click', async () => {
         statusText.innerText = "Fetching Infrastructure Data...";
         try {
             const query = `[out:json];(way["highway"~"motorway|trunk|primary|secondary"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});way["building"](${bbox.south},${bbox.west},${bbox.north},${bbox.east}););out geom;`;
-            const res = await fetch(`https://overpass-api.de/api/interpreter`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: `data=${encodeURIComponent(query)}`
-            });
-            const text = await res.text();
-            let rawData;
-            try { rawData = JSON.parse(text); } catch(err) { /* ignore HTML errors */ }
-            if (rawData?.elements) {
-                infrastructureData = rawData;
+            // Browser-friendly GET Request for generation
+            const res = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`);
+            if (res.ok) {
+                infrastructureData = await res.json();
             }
         } catch (e) {
             console.warn("Infrastructure fetch failed, skipping.");
@@ -311,8 +295,7 @@ generateBtn?.addEventListener('click', async () => {
         landCoverMask: landCoverMask,
         maskWidth: 512,
         maskHeight: 512,
-        // (We will add the infrastructure data back to the worker unpacking list in the next step!)
-        infrastructureData: infrastructureData,
+        infrastructureData: infrastructureData, 
         bbox: bbox,
         puzzleRows: puzzleRows,
         puzzleCols: puzzleCols,
