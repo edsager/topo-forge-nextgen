@@ -1,39 +1,51 @@
 // src/workers/mesh.worker.ts
 
 function hexToRgb(hex: string): [number, number, number] {
+    if (!hex) return [128, 128, 128]; // Failsafe grey
     const bigint = parseInt(hex.replace('#', ''), 16);
     return [(bigint >> 16) & 255, (bigint >> 8) & 255, bigint & 255];
+}
+
+// The "NaN Killer": Forces any missing or broken data to become a safe 0
+function cleanNum(num: any): number {
+    const parsed = Number(num);
+    return isNaN(parsed) ? 0 : parsed;
 }
 
 onmessage = async (e) => {
   const { action, payload } = e.data;
   if (action !== 'GENERATE_PUZZLE') return;
 
-  const { 
-    zExaggeration, elevationData, elevRows, elevCols, 
-    landCoverMask, maskWidth, maskHeight, 
-    puzzleRows, puzzleCols, pieceWidth, pieceDepth, tolerance, waterDrop, colors
-  } = payload;
-
   try {
-    const elevPoints = elevationData.data || elevationData;
-    const eCols = elevationData.cols || elevationData.width || elevCols;
-    const eRows = elevationData.rows || elevationData.height || elevRows;
+    // Sanitize ALL incoming configuration variables
+    const zEx = cleanNum(payload.zExaggeration) || 1.5;
+    const pRows = Math.max(1, cleanNum(payload.puzzleRows));
+    const pCols = Math.max(1, cleanNum(payload.puzzleCols));
+    const pWidth = cleanNum(payload.pieceWidth);
+    const pDepth = cleanNum(payload.pieceDepth);
+    const tol = cleanNum(payload.tolerance);
+    const wDrop = cleanNum(payload.waterDrop);
 
-    const maskPoints = landCoverMask ? (landCoverMask.data || landCoverMask) : null;
-    const mCols = landCoverMask ? (landCoverMask.cols || landCoverMask.width || maskWidth) : 1;
-    const mRows = landCoverMask ? (landCoverMask.rows || landCoverMask.height || maskHeight) : 1;
+    const elevData = payload.elevationData || {};
+    const elevPoints = elevData.data || elevData || [];
+    const eCols = cleanNum(elevData.cols || elevData.width || payload.elevCols) || 1;
+    const eRows = cleanNum(elevData.rows || elevData.height || payload.elevRows) || 1;
+    
+    const maskData = payload.landCoverMask || {};
+    const maskPoints = maskData.data || maskData || [];
+    const mCols = cleanNum(maskData.cols || maskData.width || payload.maskWidth) || 1;
+    const mRows = cleanNum(maskData.rows || maskData.height || payload.maskHeight) || 1;
 
     const pieces = [];
 
-    const cWater = hexToRgb(colors.water);
-    const cDirt = hexToRgb(colors.dirt);
-    const cForest = hexToRgb(colors.forest);
-    const cRock = hexToRgb(colors.rock);
-    const cSnow = hexToRgb(colors.snow);
+    const cWater = hexToRgb(payload.colors?.water);
+    const cDirt = hexToRgb(payload.colors?.dirt);
+    const cForest = hexToRgb(payload.colors?.forest);
+    const cRock = hexToRgb(payload.colors?.rock);
+    const cSnow = hexToRgb(payload.colors?.snow);
 
-    for (let pr = 0; pr < puzzleRows; pr++) {
-      for (let pc = 0; pc < puzzleCols; pc++) {
+    for (let pr = 0; pr < pRows; pr++) {
+      for (let pc = 0; pc < pCols; pc++) {
         
         const blockVerts: number[] = [];
         const blockColors: number[] = [];
@@ -42,10 +54,10 @@ onmessage = async (e) => {
         const gridResX = 40; 
         const gridResY = 40; 
         
-        const pieceMinX = (pc * pieceWidth) - (pieceWidth / 2 * (puzzleCols - 1)) + (tolerance / 2);
-        const pieceMaxX = pieceMinX + pieceWidth - tolerance;
-        const pieceMinZ = (pr * pieceDepth) - (pieceDepth / 2 * (puzzleRows - 1)) + (tolerance / 2);
-        const pieceMaxZ = pieceMinZ + pieceDepth - tolerance;
+        const pieceMinX = (pc * pWidth) - (pWidth / 2 * (pCols - 1)) + (tol / 2);
+        const pieceMaxX = pieceMinX + pWidth - tol;
+        const pieceMinZ = (pr * pDepth) - (pDepth / 2 * (pRows - 1)) + (tol / 2);
+        const pieceMaxZ = pieceMinZ + pDepth - tol;
 
         let minZ_mesh = Infinity;
 
@@ -57,49 +69,58 @@ onmessage = async (e) => {
             const fracX = j / gridResX;
             const localX = pieceMinX + fracX * (pieceMaxX - pieceMinX);
 
-            const globalFracX = (localX + (pieceWidth * puzzleCols) / 2) / (pieceWidth * puzzleCols);
-            const globalFracY = (localZ + (pieceDepth * puzzleRows) / 2) / (pieceDepth * puzzleRows);
+            const globalFracX = pWidth * pCols === 0 ? 0 : (localX + (pWidth * pCols) / 2) / (pWidth * pCols);
+            const globalFracY = pDepth * pRows === 0 ? 0 : (localZ + (pDepth * pRows) / 2) / (pDepth * pRows);
 
             const elevX = Math.floor(globalFracX * (eCols - 1));
             const elevY = Math.floor(globalFracY * (eRows - 1));
-            const elevIdx = Math.max(0, Math.min(elevPoints.length - 1, elevY * eCols + elevX));
             
-            // Baseline working height formula
-            let h = elevPoints[elevIdx] * zExaggeration * 0.05; 
+            const maxIdx = Math.max(0, (elevPoints.length || 1) - 1);
+            const elevIdx = Math.max(0, Math.min(maxIdx, elevY * eCols + elevX));
+            
+            // Protect against missing API data
+            let rawElev = elevPoints[elevIdx];
+            if (rawElev === undefined || isNaN(rawElev)) rawElev = 0;
+
+            let h = rawElev * zEx * 0.05; 
             let vertexColor = cDirt;
 
-            if (maskPoints) {
+            if (maskPoints && maskPoints.length > 0) {
                 const maskX = Math.floor(globalFracX * (mCols - 1));
                 const maskY = Math.floor(globalFracY * (mRows - 1));
                 const maskIdx = (maskY * mCols + maskX) * 4;
                 
-                const r = maskPoints[maskIdx];
-                const g = maskPoints[maskIdx + 1];
-                const b = maskPoints[maskIdx + 2];
+                const r = cleanNum(maskPoints[maskIdx]);
+                const g = cleanNum(maskPoints[maskIdx + 1]);
+                const b = cleanNum(maskPoints[maskIdx + 2]);
                 
                 let isWater = (r < 50 && g < 50 && b > 150); 
                 
                 if (isWater) {
-                    h -= waterDrop;
+                    h -= wDrop;
                     vertexColor = cWater;
                 } else if (g > 150 && r < 100) {
                     vertexColor = cForest;
-                } else if (elevPoints[elevIdx] > 2000) {
+                } else if (rawElev > 2000) {
                     vertexColor = cSnow;
-                } else if (elevPoints[elevIdx] > 1000) {
+                } else if (rawElev > 1000) {
                     vertexColor = cRock;
                 }
             }
 
-            blockVerts.push(localX, h, localZ);
-            blockColors.push(vertexColor[0]/255, vertexColor[1]/255, vertexColor[2]/255);
-            if (h < minZ_mesh) minZ_mesh = h;
+            // Final Absolute Failsafe before entering the 3D array
+            const finalX = cleanNum(localX);
+            const finalY = cleanNum(h);
+            const finalZ = cleanNum(localZ);
+
+            blockVerts.push(finalX, finalY, finalZ);
+            blockColors.push(cleanNum(vertexColor[0]/255), cleanNum(vertexColor[1]/255), cleanNum(vertexColor[2]/255));
+            if (finalY < minZ_mesh) minZ_mesh = finalY;
           }
         }
 
         const baseZ = Math.min(-10, minZ_mesh - 10);
 
-        // Baseline working triangle logic
         for (let i = 0; i < gridResY; i++) {
           for (let j = 0; j < gridResX; j++) {
             const v0 = i * (gridResX + 1) + j;
