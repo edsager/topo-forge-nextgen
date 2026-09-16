@@ -312,6 +312,7 @@ generateBtn?.addEventListener('click', async () => {
         maskWidth: 512,
         maskHeight: 512,
         // (We will add the infrastructure data back to the worker unpacking list in the next step!)
+        infrastructureData: infrastructureData,
         bbox: bbox,
         puzzleRows: puzzleRows,
         puzzleCols: puzzleCols,

@@ -26,7 +26,6 @@ onmessage = async (e) => {
 const { 
     zExaggeration, elevationData, elevRows, elevCols, 
     landCoverMask, maskWidth, maskHeight, 
-    roadData, trailPoints,
     puzzleRows, puzzleCols, pieceWidth, pieceDepth, tolerance, waterDrop, colors
   } = payload;
 
