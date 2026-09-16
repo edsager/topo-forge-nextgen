@@ -54,7 +54,7 @@ zExaggerationInput?.addEventListener('input', (event) => {
 });
 
 let currentTileLayer: any = null;
-let roadOverlayGroup: any = null;
+let infrastructureOverlayGroup: any = null;
 
 mapLayerSelect?.addEventListener('change', () => {
     const leafletMap = (mapUI as any).map || (mapUI as any).leafletMap || (mapUI as any)._map;
@@ -120,20 +120,21 @@ clearGpxBtn.addEventListener('click', () => {
     if (statusText) statusText.innerText = "Trail cleared.";
 });
 
-// Robust POST Request for Road Preview
+// Robust POST Request for Road & Building Preview
 previewRoadsBtn?.addEventListener('click', async () => {
     const bbox = projectState.bbox;
     if (!bbox) return;
     const leafletMap = (mapUI as any).map || (mapUI as any).leafletMap || (mapUI as any)._map;
     
-    if (roadOverlayGroup) leafletMap.removeLayer(roadOverlayGroup);
-    roadOverlayGroup = L.layerGroup().addTo(leafletMap);
+    if (infrastructureOverlayGroup) leafletMap.removeLayer(infrastructureOverlayGroup);
+    infrastructureOverlayGroup = L.layerGroup().addTo(leafletMap);
     
-    previewRoadsBtn.innerText = 'Loading...';
+    previewRoadsBtn.innerText = 'Loading Data...';
     previewRoadsBtn.disabled = true;
 
     try {
-        const query = `[out:json];(way["highway"~"motorway|trunk|primary|secondary"](${bbox.south},${bbox.west},${bbox.north},${bbox.east}););out geom;`;
+        // Querying both Roads and Buildings
+        const query = `[out:json];(way["highway"~"motorway|trunk|primary|secondary"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});way["building"](${bbox.south},${bbox.west},${bbox.north},${bbox.east}););out geom;`;
         
         const res = await fetch(`https://overpass-api.de/api/interpreter`, {
             method: 'POST',
@@ -141,24 +142,38 @@ previewRoadsBtn?.addEventListener('click', async () => {
             body: `data=${encodeURIComponent(query)}`
         });
 
-        if (!res.ok) throw new Error(`Server returned ${res.status}`);
+        const text = await res.text();
+        let data;
+        try {
+            data = JSON.parse(text);
+        } catch(err) {
+            throw new Error(`Server returned non-JSON (Rate limit or busy).`);
+        }
         
-        const data = await res.json();
-        
-        if (!data.elements || data.elements.length === 0) {
-            statusText.innerText = `No major roads found in this area.`;
+        if (!data?.elements || data.elements.length === 0) {
+            statusText.innerText = `No roads or buildings found in this area.`;
             return;
         }
 
+        let roadCount = 0;
+        let bldgCount = 0;
+
         data.elements.forEach((el: any) => {
-            if (el.type === 'way' && el.geometry) {
+            if (el.type === 'way' && el.geometry && el.tags) {
                 const latlngs = el.geometry.map((g: any) => [g.lat, g.lon]);
-                L.polyline(latlngs, {color: colRoads.value, weight: 3, opacity: 0.8}).addTo(roadOverlayGroup);
+                
+                if (el.tags.building) {
+                    L.polygon(latlngs, {color: colBldgs.value, weight: 1, fillColor: colBldgs.value, fillOpacity: 0.5}).addTo(infrastructureOverlayGroup);
+                    bldgCount++;
+                } else if (el.tags.highway) {
+                    L.polyline(latlngs, {color: colRoads.value, weight: 3, opacity: 0.8}).addTo(infrastructureOverlayGroup);
+                    roadCount++;
+                }
             }
         });
-        statusText.innerText = `Previewing ${data.elements.length} roads.`;
+        statusText.innerText = `Previewing ${roadCount} roads and ${bldgCount} buildings.`;
     } catch (e: any) {
-        statusText.innerText = `Road API Error: ${e.message}`;
+        statusText.innerText = `API Error: ${e.message}`;
     } finally {
         previewRoadsBtn.innerText = 'Preview Roads on Map';
         previewRoadsBtn.disabled = false;
@@ -250,22 +265,24 @@ generateBtn?.addEventListener('click', async () => {
       fetchLandCoverData(bbox, 512, 512)
     ]);
 
-    let roadData = null;
+    let infrastructureData = null;
     if (includeRoadsCheckbox.checked) {
-        statusText.innerText = "Fetching Overpass Road Data...";
+        statusText.innerText = "Fetching Infrastructure Data...";
         try {
-            const query = `[out:json];(way["highway"~"motorway|trunk|primary|secondary"](${bbox.south},${bbox.west},${bbox.north},${bbox.east}););out geom;`;
-            // Robust POST request for generation
+            const query = `[out:json];(way["highway"~"motorway|trunk|primary|secondary"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});way["building"](${bbox.south},${bbox.west},${bbox.north},${bbox.east}););out geom;`;
             const res = await fetch(`https://overpass-api.de/api/interpreter`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                 body: `data=${encodeURIComponent(query)}`
             });
-            if (res.ok) {
-                roadData = await res.json();
+            const text = await res.text();
+            let rawData;
+            try { rawData = JSON.parse(text); } catch(err) { /* ignore HTML errors */ }
+            if (rawData?.elements) {
+                infrastructureData = rawData;
             }
         } catch (e) {
-            console.warn("Road fetch failed, skipping.");
+            console.warn("Infrastructure fetch failed, skipping.");
         }
     }
 
@@ -294,8 +311,7 @@ generateBtn?.addEventListener('click', async () => {
         landCoverMask: landCoverMask,
         maskWidth: 512,
         maskHeight: 512,
-        roadData: roadData,
-        trailPoints: loadedTrailPoints,
+        // (We will add the infrastructure data back to the worker unpacking list in the next step!)
         bbox: bbox,
         puzzleRows: puzzleRows,
         puzzleCols: puzzleCols,
